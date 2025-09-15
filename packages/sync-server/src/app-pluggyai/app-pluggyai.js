@@ -1,5 +1,10 @@
 import express from 'express';
 
+// OpenTelemetry imports
+import { SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
+import { logger, tracer } from '../otel.js';
+
 import { handleError } from '../app-gocardless/util/handle-error.js';
 import { SecretName, secretsService } from '../services/secrets-service.js';
 import { requestLoggerMiddleware } from '../util/middlewares.js';
@@ -14,15 +19,39 @@ app.use(requestLoggerMiddleware);
 app.post(
   '/status',
   handleError(async (req, res) => {
-    const clientId = secretsService.get(SecretName.pluggyai_clientId);
-    const configured = clientId != null;
+    const span = tracer.startSpan('pluggyai.status');
 
-    res.send({
-      status: 'ok',
-      data: {
-        configured,
-      },
-    });
+    try {
+      const clientId = secretsService.get(SecretName.pluggyai_clientId);
+      const configured = clientId != null;
+
+      span.setAttributes({
+        'pluggyai.configured': configured,
+        'pluggyai.has_client_id': clientId != null,
+      });
+
+      res.send({
+        status: 'ok',
+        data: {
+          configured,
+        },
+      });
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+      span.end();
+
+      logger.emit({
+        severityNumber: SeverityNumber.ERROR,
+        severityText: 'ERROR',
+        body: 'Error checking PluggyAI status',
+        attributes: { error: error.message },
+      });
+
+      throw error;
+    }
   }),
 );
 

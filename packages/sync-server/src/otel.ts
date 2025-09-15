@@ -121,6 +121,22 @@ export const errorRateTotal = meter.createCounter('errors_total', {
   description: 'Total number of errors by type',
 });
 
+export const authOperationsTotal = meter.createCounter('auth_operations_total', {
+  description: 'Total number of authentication operations',
+});
+
+export const adminOperationsTotal = meter.createCounter('admin_operations_total', {
+  description: 'Total number of admin operations',
+});
+
+export const secretOperationsTotal = meter.createCounter('secret_operations_total', {
+  description: 'Total number of secret operations',
+});
+
+export const bankIntegrationOperationsTotal = meter.createCounter('bank_integration_operations_total', {
+  description: 'Total number of bank integration operations',
+});
+
 // Initialize OpenTelemetry and return initialized components
 export function initOtel() {
   try {

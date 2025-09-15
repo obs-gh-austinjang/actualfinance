@@ -1,6 +1,11 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 
+// OpenTelemetry imports
+import { SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
+import { logger, tracer, adminOperationsTotal } from './otel.js';
+
 import { isAdmin } from './account-db.js';
 import * as UserService from './services/user-service.js';
 import {
@@ -18,10 +23,38 @@ app.use(requestLoggerMiddleware);
 export { app as handlers };
 
 app.get('/owner-created/', (req, res) => {
+  const span = tracer.startSpan('admin.owner_created');
+
   try {
     const ownerCount = UserService.getOwnerCount();
+
+    span.setAttributes({
+      'admin.owner_count': ownerCount,
+      'admin.owner_exists': ownerCount > 0,
+    });
+
+    // Record metrics
+    adminOperationsTotal.add(1, {
+      operation: 'owner_created',
+      status: 'success',
+      owner_exists: (ownerCount > 0).toString(),
+    });
+
     res.json(ownerCount > 0);
+
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
   } catch (error) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    span.end();
+
+    logger.emit({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: 'ERROR',
+      body: 'Error retrieving owner count',
+      attributes: { error: error.message },
+    });
+
     res.status(500).json({ error: 'Failed to retrieve owner count' });
   }
 });
