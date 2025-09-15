@@ -1,5 +1,10 @@
 import express from 'express';
 
+// OpenTelemetry imports
+import { SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
+import { logger, tracer, authOperationsTotal } from './otel.js';
+
 import {
   bootstrap,
   needsBootstrap,
@@ -30,29 +35,93 @@ export { app as handlers };
 // /login
 
 app.get('/needs-bootstrap', (req, res) => {
-  const availableLoginMethods = listLoginMethods();
-  res.send({
-    status: 'ok',
-    data: {
-      bootstrapped: !needsBootstrap(),
-      loginMethod:
-        availableLoginMethods.length === 1
-          ? availableLoginMethods[0].method
-          : getLoginMethod(),
-      availableLoginMethods,
-      multiuser: getActiveLoginMethod() === 'openid',
-    },
-  });
+  const span = tracer.startSpan('account.needs_bootstrap');
+
+  try {
+    const availableLoginMethods = listLoginMethods();
+    const bootstrapped = !needsBootstrap();
+
+    span.setAttributes({
+      'account.bootstrapped': bootstrapped,
+      'account.available_login_methods_count': availableLoginMethods.length,
+      'account.multiuser': getActiveLoginMethod() === 'openid',
+    });
+
+    // Record metrics
+    authOperationsTotal.add(1, {
+      operation: 'needs_bootstrap',
+      status: 'success',
+      bootstrapped: bootstrapped.toString(),
+    });
+
+    res.send({
+      status: 'ok',
+      data: {
+        bootstrapped,
+        loginMethod:
+          availableLoginMethods.length === 1
+            ? availableLoginMethods[0].method
+            : getLoginMethod(),
+        availableLoginMethods,
+        multiuser: getActiveLoginMethod() === 'openid',
+      },
+    });
+
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+  } catch (error) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    span.end();
+
+    logger.emit({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: 'ERROR',
+      body: 'Error checking bootstrap status',
+      attributes: { error: error.message },
+    });
+
+    throw error;
+  }
 });
 
 app.post('/bootstrap', async (req, res) => {
-  const boot = await bootstrap(req.body);
+  const span = tracer.startSpan('account.bootstrap');
 
-  if (boot?.error) {
-    res.status(400).send({ status: 'error', reason: boot?.error });
-    return;
+  try {
+    span.setAttributes({
+      'account.bootstrap.has_password': !!req.body.password,
+      'account.bootstrap.has_openid': !!req.body.openId,
+    });
+
+    const boot = await bootstrap(req.body);
+
+    if (boot?.error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: boot.error });
+      span.end();
+      res.status(400).send({ status: 'error', reason: boot?.error });
+      return;
+    }
+
+    span.setAttributes({
+      'account.bootstrap.success': true,
+    });
+
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+    res.send({ status: 'ok', data: boot });
+  } catch (error) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    span.end();
+
+    logger.emit({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: 'ERROR',
+      body: 'Error during bootstrap',
+      attributes: { error: error.message },
+    });
+
+    throw error;
   }
-  res.send({ status: 'ok', data: boot });
 });
 
 app.get('/login-methods', (req, res) => {
@@ -61,60 +130,125 @@ app.get('/login-methods', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-  const loginMethod = getLoginMethod(req);
-  console.log('Logging in via ' + loginMethod);
-  let tokenRes = null;
-  switch (loginMethod) {
-    case 'header': {
-      const headerVal = req.get('x-actual-password') || '';
-      const obfuscated =
-        '*'.repeat(headerVal.length) || 'No password provided.';
-      console.debug('HEADER VALUE: ' + obfuscated);
-      if (headerVal === '') {
-        res.send({ status: 'error', reason: 'invalid-header' });
-        return;
-      } else {
-        if (validateAuthHeader(req)) {
-          tokenRes = loginWithPassword(headerVal);
+  const span = tracer.startSpan('account.login');
+
+  try {
+    const loginMethod = getLoginMethod(req);
+    console.log('Logging in via ' + loginMethod);
+
+    span.setAttributes({
+      'account.login.method': loginMethod,
+    });
+
+    let tokenRes = null;
+    switch (loginMethod) {
+      case 'header': {
+        const headerVal = req.get('x-actual-password') || '';
+        const obfuscated =
+          '*'.repeat(headerVal.length) || 'No password provided.';
+        console.debug('HEADER VALUE: ' + obfuscated);
+        if (headerVal === '') {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: 'Invalid header' });
+          span.end();
+          res.send({ status: 'error', reason: 'invalid-header' });
+          return;
         } else {
-          res.send({ status: 'error', reason: 'proxy-not-trusted' });
+          if (validateAuthHeader(req)) {
+            tokenRes = loginWithPassword(headerVal);
+          } else {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: 'Proxy not trusted' });
+            span.end();
+            res.send({ status: 'error', reason: 'proxy-not-trusted' });
+            return;
+          }
+        }
+        break;
+      }
+      case 'openid': {
+        if (!isValidRedirectUrl(req.body.returnUrl)) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: 'Invalid redirect URL' });
+          span.end();
+          res
+            .status(400)
+            .send({ status: 'error', reason: 'Invalid redirect URL' });
           return;
         }
-      }
-      break;
-    }
-    case 'openid': {
-      if (!isValidRedirectUrl(req.body.returnUrl)) {
-        res
-          .status(400)
-          .send({ status: 'error', reason: 'Invalid redirect URL' });
+
+        const { error, url } = await loginWithOpenIdSetup(
+          req.body.returnUrl,
+          req.body.password,
+        );
+        if (error) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: error });
+          span.end();
+          res.status(400).send({ status: 'error', reason: error });
+          return;
+        }
+
+        span.setAttributes({
+          'account.login.openid_success': true,
+        });
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
+        res.send({ status: 'ok', data: { returnUrl: url } });
         return;
       }
 
-      const { error, url } = await loginWithOpenIdSetup(
-        req.body.returnUrl,
-        req.body.password,
-      );
-      if (error) {
-        res.status(400).send({ status: 'error', reason: error });
-        return;
-      }
-      res.send({ status: 'ok', data: { returnUrl: url } });
+      default:
+        tokenRes = loginWithPassword(req.body.password);
+        break;
+    }
+    const { error, token } = tokenRes;
+
+    if (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error });
+      span.end();
+
+      // Record metrics
+      authOperationsTotal.add(1, {
+        operation: 'login',
+        method: loginMethod,
+        status: 'error',
+      });
+
+      res.status(400).send({ status: 'error', reason: error });
       return;
     }
 
-    default:
-      tokenRes = loginWithPassword(req.body.password);
-      break;
-  }
-  const { error, token } = tokenRes;
+    span.setAttributes({
+      'account.login.success': true,
+    });
 
-  if (error) {
-    res.status(400).send({ status: 'error', reason: error });
-    return;
-  }
+    // Record metrics
+    authOperationsTotal.add(1, {
+      operation: 'login',
+      method: loginMethod,
+      status: 'success',
+    });
 
-  res.send({ status: 'ok', data: { token } });
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+    res.send({ status: 'ok', data: { token } });
+  } catch (error) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    span.end();
+
+    logger.emit({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: 'ERROR',
+      body: 'Error during login',
+      attributes: { error: error.message },
+    });
+
+    // Record metrics
+    authOperationsTotal.add(1, {
+      operation: 'login',
+      method: 'unknown',
+      status: 'error',
+    });
+
+    res.status(500).send({ status: 'error', reason: 'internal-error' });
+  }
 });
 
 app.post('/change-password', (req, res) => {

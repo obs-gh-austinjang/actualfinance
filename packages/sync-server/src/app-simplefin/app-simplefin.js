@@ -2,6 +2,11 @@ import https from 'https';
 
 import express from 'express';
 
+// OpenTelemetry imports
+import { SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
+import { logger, tracer } from '../otel.js';
+
 import { handleError } from '../app-gocardless/util/handle-error.js';
 import { SecretName, secretsService } from '../services/secrets-service.js';
 import { requestLoggerMiddleware } from '../util/middlewares.js';
@@ -14,15 +19,39 @@ app.use(requestLoggerMiddleware);
 app.post(
   '/status',
   handleError(async (req, res) => {
-    const token = secretsService.get(SecretName.simplefin_token);
-    const configured = token != null && token !== 'Forbidden';
+    const span = tracer.startSpan('simplefin.status');
 
-    res.send({
-      status: 'ok',
-      data: {
-        configured,
-      },
-    });
+    try {
+      const token = secretsService.get(SecretName.simplefin_token);
+      const configured = token != null && token !== 'Forbidden';
+
+      span.setAttributes({
+        'simplefin.configured': configured,
+        'simplefin.has_token': token != null,
+      });
+
+      res.send({
+        status: 'ok',
+        data: {
+          configured,
+        },
+      });
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+      span.end();
+
+      logger.emit({
+        severityNumber: SeverityNumber.ERROR,
+        severityText: 'ERROR',
+        body: 'Error checking SimpleFin status',
+        attributes: { error: error.message },
+      });
+
+      throw error;
+    }
   }),
 );
 

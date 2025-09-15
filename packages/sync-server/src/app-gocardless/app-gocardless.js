@@ -4,6 +4,11 @@ import { inspect } from 'util';
 import { isAxiosError } from 'axios';
 import express from 'express';
 
+// OpenTelemetry imports
+import { SpanStatusCode } from '@opentelemetry/api';
+import { SeverityNumber } from '@opentelemetry/api-logs';
+import { logger, tracer, bankIntegrationOperationsTotal } from '../otel.js';
+
 import { sha256String } from '../util/hash.js';
 import {
   requestLoggerMiddleware,
@@ -31,12 +36,45 @@ app.use(express.json());
 app.use(validateSessionMiddleware);
 
 app.post('/status', async (req, res) => {
-  res.send({
-    status: 'ok',
-    data: {
-      configured: goCardlessService.isConfigured(),
-    },
-  });
+  const span = tracer.startSpan('gocardless.status');
+
+  try {
+    const configured = goCardlessService.isConfigured();
+
+    span.setAttributes({
+      'gocardless.configured': configured,
+    });
+
+    // Record metrics
+    bankIntegrationOperationsTotal.add(1, {
+      provider: 'gocardless',
+      operation: 'status',
+      status: 'success',
+      configured: configured.toString(),
+    });
+
+    res.send({
+      status: 'ok',
+      data: {
+        configured,
+      },
+    });
+
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+  } catch (error) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+    span.end();
+
+    logger.emit({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: 'ERROR',
+      body: 'Error checking GoCardless status',
+      attributes: { error: error.message },
+    });
+
+    throw error;
+  }
 });
 
 app.post(
