@@ -2,9 +2,6 @@
 // This file will initialize the app if we are in a real browser
 // environment (not electron)
 
-// Initialize OpenTelemetry FIRST before any other imports
-import { initOtel } from './otel-client';
-
 import './browser-preload';
 
 import './fonts.scss';
@@ -40,6 +37,9 @@ import * as tagsSlice from './tags/tagsSlice';
 import * as transactionsSlice from './transactions/transactionsSlice';
 import { redo, undo } from './undo';
 import * as usersSlice from './users/usersSlice';
+
+// Initialize OpenTelemetry FIRST before any other imports
+import { initOtel } from './otel-client';
 
 // Initialize OpenTelemetry
 initOtel();

@@ -1,10 +1,9 @@
 // Initialize OpenTelemetry FIRST before any other imports
+import { run as runMigrations } from './src/migrations.js';
 import { initOtel, shutdownOtel } from './src/otel.js';
 
 // Initialize OpenTelemetry
 initOtel();
-
-import { run as runMigrations } from './src/migrations.js';
 
 runMigrations()
   .then(() => {

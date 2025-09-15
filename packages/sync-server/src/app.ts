@@ -2,14 +2,12 @@ import fs, { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import cors from 'cors';
-import express from 'express';
-import rateLimit from 'express-rate-limit';
-
 // OpenTelemetry imports
 import { SpanStatusCode } from '@opentelemetry/api';
 import { SeverityNumber } from '@opentelemetry/api-logs';
-import { logger, tracer, meter } from './otel.js';
+import cors from 'cors';
+import express from 'express';
+import rateLimit from 'express-rate-limit';
 
 import { bootstrap } from './account-db.js';
 import * as accountApp from './app-account.js';
@@ -21,6 +19,7 @@ import * as secretApp from './app-secrets.js';
 import * as simpleFinApp from './app-simplefin/app-simplefin.js';
 import * as syncApp from './app-sync.js';
 import { config } from './load-config.js';
+import { logger, tracer, meter } from './otel.js';
 
 const app = express();
 
@@ -29,9 +28,12 @@ const httpRequestsTotal = meter.createCounter('http_requests_total', {
   description: 'Total number of HTTP requests',
 });
 
-const httpRequestDuration = meter.createHistogram('http_request_duration_seconds', {
-  description: 'Duration of HTTP requests in seconds',
-});
+const httpRequestDuration = meter.createHistogram(
+  'http_request_duration_seconds',
+  {
+    description: 'Duration of HTTP requests in seconds',
+  },
+);
 
 const serverStartTime = meter.createGauge('server_start_time_seconds', {
   description: 'Unix timestamp when the server started',
@@ -89,7 +91,8 @@ app.use((req, res, next) => {
 
     // Log request
     logger.emit({
-      severityNumber: res.statusCode >= 400 ? SeverityNumber.WARN : SeverityNumber.INFO,
+      severityNumber:
+        res.statusCode >= 400 ? SeverityNumber.WARN : SeverityNumber.INFO,
       severityText: res.statusCode >= 400 ? 'WARN' : 'INFO',
       body: `${req.method} ${req.path} ${res.statusCode}`,
       attributes: {
@@ -193,7 +196,7 @@ app.get('/metrics', (_req, res) => {
       external: memUsage.external,
       arrayBuffers: memUsage.arrayBuffers,
     },
-    uptime: uptime,
+    uptime,
 
     // Process metrics
     process: {
@@ -273,46 +276,49 @@ export async function run() {
       'server.port': port,
       'server.hostname': hostname,
     });
-  const openIdConfig = config?.getProperties()?.openId;
-  if (
-    openIdConfig?.discoveryURL ||
-    // @ts-expect-error FIXME no types for config yet
-    openIdConfig?.issuer?.authorization_endpoint
-  ) {
-    console.log('OpenID configuration found. Preparing server to use it');
-    try {
-      const { error } = await bootstrap({ openId: openIdConfig }, true);
-      if (error) {
-        console.log(error);
-      } else {
-        console.log('OpenID configured!');
+    const openIdConfig = config?.getProperties()?.openId;
+    if (
+      openIdConfig?.discoveryURL ||
+      // @ts-expect-error FIXME no types for config yet
+      openIdConfig?.issuer?.authorization_endpoint
+    ) {
+      console.log('OpenID configuration found. Preparing server to use it');
+      try {
+        const { error } = await bootstrap({ openId: openIdConfig }, true);
+        if (error) {
+          console.log(error);
+        } else {
+          console.log('OpenID configured!');
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
     }
-  }
 
-  if (config.get('https.key') && config.get('https.cert')) {
-    const https = await import('node:https');
-    const httpsOptions = {
-      ...config.get('https'),
-      key: parseHTTPSConfig(config.get('https.key')),
-      cert: parseHTTPSConfig(config.get('https.cert')),
-    };
-    https.createServer(httpsOptions, app).listen(port, hostname, () => {
-      sendServerStartedMessage();
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
-    });
-  } else {
-    app.listen(port, hostname, () => {
-      sendServerStartedMessage();
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
-    });
-  }
+    if (config.get('https.key') && config.get('https.cert')) {
+      const https = await import('node:https');
+      const httpsOptions = {
+        ...config.get('https'),
+        key: parseHTTPSConfig(config.get('https.key')),
+        cert: parseHTTPSConfig(config.get('https.cert')),
+      };
+      https.createServer(httpsOptions, app).listen(port, hostname, () => {
+        sendServerStartedMessage();
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
+      });
+    } else {
+      app.listen(port, hostname, () => {
+        sendServerStartedMessage();
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
+      });
+    }
   } catch (error) {
-    span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+    span.setStatus({
+      code: SpanStatusCode.ERROR,
+      message: (error as Error).message,
+    });
     span.end();
     logger.emit({
       severityNumber: SeverityNumber.ERROR,
