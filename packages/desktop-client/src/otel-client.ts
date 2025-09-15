@@ -7,7 +7,10 @@ import {
   SimpleSpanProcessor,
   WebTracerProvider,
 } from '@opentelemetry/sdk-trace-web';
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import {
+  ATTR_SERVICE_NAME,
+  ATTR_SERVICE_VERSION,
+} from '@opentelemetry/semantic-conventions';
 
 // Configuration
 const serviceName = 'actual-budget-client';
@@ -16,13 +19,16 @@ const serviceVersion = process.env.npm_package_version || '25.9.0';
 // Environment variables for client-side configuration
 // In Vite, use import.meta.env instead of process.env for client-side variables
 const otlpEndpoint =
-  (typeof window !== 'undefined' && (window as unknown as { __OTEL_ENDPOINT__?: string }).__OTEL_ENDPOINT__) ||
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __OTEL_ENDPOINT__?: string }).__OTEL_ENDPOINT__) ||
   import.meta.env?.VITE_OTEL_EXPORTER_OTLP_ENDPOINT ||
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
   'http://localhost:4318';
 
 const otlpEndpointBearerToken =
-  (typeof window !== 'undefined' && (window as unknown as { __OTEL_BEARER_TOKEN__?: string }).__OTEL_BEARER_TOKEN__) ||
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __OTEL_BEARER_TOKEN__?: string })
+      .__OTEL_BEARER_TOKEN__) ||
   import.meta.env?.VITE_OTEL_EXPORTER_OTLP_BEARER_TOKEN ||
   process.env.OTEL_EXPORTER_OTLP_BEARER_TOKEN;
 
@@ -47,7 +53,7 @@ const provider = new WebTracerProvider({
           ...authHeader,
           'x-observe-target-package': 'Tracing',
         },
-      })
+      }),
     ),
   ],
 });
@@ -85,7 +91,9 @@ export function initOtel() {
       },
     });
 
-    console.log('OpenTelemetry initialized successfully for Actual Budget client');
+    console.log(
+      'OpenTelemetry initialized successfully for Actual Budget client',
+    );
     console.log(`- Service: ${serviceName}`);
     console.log(`- Version: ${serviceVersion}`);
     console.log(`- OTLP Endpoint: ${otlpEndpoint}`);
